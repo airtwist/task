@@ -4,14 +4,12 @@ package org.example;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Getter;
 import lombok.Setter;
+import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
-
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
@@ -20,14 +18,25 @@ public class CrptAPI {
     private final String apiUrl;
     private final long timeLimit;
     private final TimeUnit limitUnit;
+
     private final Semaphore semaphore;
 
+    private final ReleaseTask releaseTask = new ReleaseTask();
+
+    private final Timer timer = new Timer();
 
     public CrptAPI(long timeLimit, TimeUnit limitUnit, int requestLimit, String apiUrl) {
+        this.semaphore = new Semaphore(requestLimit);
         this.timeLimit = timeLimit;
         this.limitUnit = limitUnit;
-        this.semaphore = new Semaphore(requestLimit);
         this.apiUrl = apiUrl;
+    }
+
+    class ReleaseTask extends TimerTask {
+        @Override
+        public void run() {
+            semaphore.release();
+        }
     }
 
     /**
@@ -36,76 +45,68 @@ public class CrptAPI {
      * @param document  объект документа
      * @param signature подпись
      */
-    public void createDocument(Object document, String signature) {
-        synchronized (semaphore) {
-            try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
-                semaphore.wait(limitUnit.toMillis(timeLimit));
-                HttpPost httpPost = new HttpPost(apiUrl);
+    public void createDocument(Document document, String signature) {
+        try {
+            semaphore.acquire(1);
+            long millis = limitUnit.toMillis(timeLimit);
+            timer.schedule(new ReleaseTask(), millis);
+            doRequest(document, signature);
 
-                // Устанавливаем заголовки
-                httpPost.setHeader("Content-Type", "application/json");
-
-                // Преобразуем документ в JSON
-                ObjectMapper objectMapper = new ObjectMapper();
-                String documentJson = objectMapper.writeValueAsString(document);
-
-                // Формируем тело запроса
-                String requestBody = String.format("{ \"product_document\": \"%s\", \"document_format\": \"MANUAL\", \"type\": \"LP_INTRODUCE_GOODS\", \"signature\": \"%s\" }", documentJson, signature);
-                StringEntity entity = new StringEntity(requestBody);
-                httpPost.setEntity(entity);
-
-//            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-//                // Обработка ответа
-//                int statusCode = response.getStatusLine().getStatusCode();
-//                if (statusCode == 200) {
-//                    System.out.println("Document successfully created!");
-//                } else {
-//                    System.out.println("Failed to create the document. Status code: " + statusCode);
-//                }
-//            }
-//
-
-                String uuid = String.valueOf(UUID.randomUUID());
-                System.out.println("Started " + uuid);
-                Thread.sleep(3000);
-                System.out.println("Ended " + uuid);
-
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            } catch (Exception e) {
-                e.printStackTrace();
-            } finally {
-                semaphore.release();
-            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         }
-
     }
+
+
+    public void doRequest(Document document, String signature) {
+
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost httpPost = new HttpPost(apiUrl);
+
+            // Устанавливаем заголовки
+            httpPost.setHeader("Content-Type", "application/json");
+
+            // Преобразуем документ в JSON
+            ObjectMapper objectMapper = new ObjectMapper();
+
+            StringEntity entity = new StringEntity(objectMapper.writeValueAsString(document));
+            httpPost.setEntity(entity);
+
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                // Обработка ответа
+                int statusCode = response.getStatusLine().getStatusCode();
+                if (statusCode == 200) {
+                    System.out.println("Document successfully created!");
+                } else {
+                    System.out.println("Failed to create the document. Status code: " + statusCode);
+                }
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
 
     public static void main(String[] args) {
         // Пример использования
         String apiUrl = "https://ismp.crpt.ru/api/v3/lk/documents/create";
-        CrptAPI crptApi = new CrptAPI(1, TimeUnit.SECONDS, 61, apiUrl);
+        CrptAPI crptApi = new CrptAPI(30, TimeUnit.SECONDS, 5, apiUrl);
 
         // Создание объекта Description
         Document document = getDocument();
         String signature = "<Открепленная подпись в base64>";
         crptApi.createDocument(document, signature);
-        for (int i = 0; i < 10; i++) {
-            Runnable task2 = () -> crptApi.createDocument(document, signature);
-            Thread thread = new Thread(task2);
-            thread.start();
-        }
+
     }
 
     private static Document getDocument() {
         Description description = new Description("1234567890");
 
         // Создание объектов Product
-        Product product1 = new Product("cert1", "2023-07-27", "123", "owner1", "producer1", "2023-07-27", "tnved1", "uit1", "uitu1");
-        Product product2 = new Product("cert2", "2023-07-28", "456", "owner2", "producer2", "2023-07-28", "tnved2", "uit2", "uitu2");
+        Product product1 = new Product("cert1", "2024-03-19", "123", "owner1", "producer1", "2024-03-19", "tnved1", "uit_1", "uitu_11");
         List<Product> products = new ArrayList<>();
         products.add(product1);
-        products.add(product2);
 
         // Создание объекта Document
         return new Document(description, "doc123", "approved", "type1", true, "owner_inn", "participant_inn", "producer_inn", "2023-07-27", "type2", products, "2023-07-27", "reg123");
@@ -185,6 +186,6 @@ class Product {
         this.tnved_code = tnved_code;
         this.uit_code = uit_code;
         this.uitu_code = uitu_code;
-    }
 
+    }
 }
